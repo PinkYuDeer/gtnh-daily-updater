@@ -1,12 +1,24 @@
-# GTNH Daily Build Updater
+# GTNH Dev Build Updater
 
-自动更新 [GT: New Horizons](https://github.com/GTNewHorizons) daily build 的 mods 和 config 的命令行工具。
+自动更新 [GT: New Horizons](https://github.com/GTNewHorizons) dev build（daily / experimental）的 mods 和 config 的命令行工具。
 
 支持客户端（MMC/Prism Launcher）和服务端两种场景。
 
+## 前置步骤：下载构建包
+
+本工具**不会**自动从网络下载构建包。使用前，请先从以下 GitHub Actions 页面手动下载对应的压缩包：
+
+- **Daily Build**：[daily-modpack-build.yml](https://github.com/GTNewHorizons/DreamAssemblerXXL/actions/workflows/daily-modpack-build.yml)
+- **Experimental Build**：[experimental-modpack-build.yml](https://github.com/GTNewHorizons/DreamAssemblerXXL/actions/workflows/experimental-modpack-build.yml)
+
+在 Actions 页面中选择一个成功的 workflow run，滚动到底部的 **Artifacts** 区域，下载你需要的压缩包（客户端选 `mmcprism` 变体，服务端选 `server` 变体）。
+
+下载完成后，脚本会自动在本地查找并使用这些压缩包。
+
 ## 功能
 
-- 自动查找最新的 daily build 压缩包（优先下载目录，其次脚本所在目录）
+- 自动在本地查找最新的构建压缩包（优先下载目录，其次脚本所在目录）
+- 支持 `daily` 和 `experimental` 等构建类型，以及 `java8` / `new-java` 变体
 - 智能匹配新旧 mod，区分升级、降级、新增、用户自添加
 - 合并 Forge `.cfg` 配置文件（保留已有设置值，仅添加新增项）
 - 更新前自动备份所有 mod
@@ -19,46 +31,46 @@
 
 ### 客户端
 
-将 `update_daily_client.py` 放入 `.minecraft` 目录下：
+将 `update_dev_client.py` 放入 `.minecraft` 目录下：
 
 ```
 .minecraft/
 ├── mods/
 ├── config/
-└── update_daily_client.py  ← 放这里
+└── update_dev_client.py  ← 放这里
 ```
 
 ```bash
-# 自动查找最新的 daily build 并更新
-python update_daily_client.py
+# 自动查找最新的构建包并更新
+python update_dev_client.py
 
 # 仅预览，不做修改
-python update_daily_client.py --dry-run
+python update_dev_client.py --dry-run
 
 # 指定压缩包路径
-python update_daily_client.py --zip path/to/gtnh-daily-xxx-mmcprism-new-java.zip
+python update_dev_client.py --zip path/to/gtnh-daily-xxx-mmcprism-new-java.zip
 ```
 
 ### 服务端
 
-将 `update_daily_server.py` 放入服务端根目录下：
+将 `update_dev_server.py` 放入服务端根目录下：
 
 ```
 server/
 ├── mods/
 ├── config/
-└── update_daily_server.py  ← 放这里
+└── update_dev_server.py  ← 放这里
 ```
 
 ```bash
-# 自动查找最新的 daily build 并更新
-python update_daily_server.py
+# 自动查找最新的构建包并更新
+python update_dev_server.py
 
 # 仅预览，不做修改
-python update_daily_server.py --dry-run
+python update_dev_server.py --dry-run
 
 # 指定压缩包路径
-python update_daily_server.py --zip path/to/gtnh-daily-xxx-server-new-java.zip
+python update_dev_server.py --zip path/to/gtnh-experimental-xxx-server-new-java.zip
 ```
 
 ## 排除配置
@@ -76,12 +88,10 @@ AnotherMod
 
 ## 压缩包搜索顺序
 
-脚本会按以下顺序搜索压缩包：
+脚本会按以下顺序在本地搜索压缩包：
 
 1. 用户下载目录（`~/Downloads`）
 2. 脚本所在目录
-
-支持 `daily` 和 `experimental` 等构建类型，以及 `java8` / `new-java` 变体：
 
 | 脚本 | 匹配模式 | 示例 |
 |------|----------|------|

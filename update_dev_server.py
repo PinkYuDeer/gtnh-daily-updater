@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-GTNH Daily Build Server Updater
-================================
-对比并更新来自新 daily build 压缩包的 mods 和 config（服务端）。
+GTNH Dev Build Server Updater
+==============================
+对比并更新来自新 daily/experimental build 压缩包的 mods 和 config（服务端）。
 将此脚本放置于服务端根目录下运行。
 
 用法:
-  python update_daily_server.py              # 自动查找最新的服务端 build
-  python update_daily_server.py --dry-run    # 仅预览，不做任何修改
-  python update_daily_server.py --zip <path> # 指定压缩包路径
+  python update_dev_server.py              # 自动查找最新的服务端 build
+  python update_dev_server.py --dry-run    # 仅预览，不做任何修改
+  python update_dev_server.py --zip <path> # 指定压缩包路径
 """
 
 import os
@@ -527,7 +527,7 @@ def update_configs(inner_zip, dry_run=False):
 # ─────────────────────── 主流程 ───────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="GTNH Daily Build Server Updater")
+    parser = argparse.ArgumentParser(description="GTNH Dev Build Server Updater")
     parser.add_argument("--dry-run", action="store_true", help="仅预览，不做修改")
     parser.add_argument("--zip", type=str, default=None, help="指定 zip 文件路径")
     args = parser.parse_args()
@@ -535,7 +535,7 @@ def main():
     dry_run = args.dry_run
 
     print("=" * 60)
-    print("     GTNH Daily Build Server Mod/Config 更新工具")
+    print("     GTNH Dev Build Server Mod/Config 更新工具")
     print("=" * 60)
     log(f"工作目录: {SCRIPT_DIR}")
     log(f"下载目录: {DOWNLOADS_DIR}")
