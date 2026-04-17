@@ -98,6 +98,61 @@ def find_latest_daily_zip(search_dirs):
     return None
 
 
+def parse_build_info(zip_filename):
+    """
+    从压缩包文件名中提取构建类型和构建号。
+    例如: gtnh-daily-2026-04-17+462-server-new-java.zip → ("daily", "462")
+          gtnh-experimental-2026-04-17+105-server.zip → ("experimental", "105")
+    """
+    basename = os.path.basename(zip_filename)
+    m = re.match(r"gtnh-(\w+)-\d{4}-\d{2}-\d{2}\+(\d+)-", basename, re.I)
+    if m:
+        return m.group(1), m.group(2)
+    return None, None
+
+
+def update_server_motd(build_type, build_number, dry_run=False):
+    """
+    更新 server.properties 中的 motd 行。
+    将 motd=GT\:New Horizons xxx NNN 替换为新的构建类型和构建号。
+    """
+    props_path = os.path.join(SCRIPT_DIR, "server.properties")
+    if not os.path.isfile(props_path):
+        log("未找到 server.properties，跳过 motd 更新", "WARN")
+        return
+
+    with open(props_path, "r", encoding="utf-8") as f:
+        lines = f.readlines()
+
+    motd_pat = re.compile(r"^(motd=GT\\:New Horizons )\w+ \d+(.*)$")
+    new_motd_value = f"{build_type} {build_number}"
+    updated = False
+
+    for i, line in enumerate(lines):
+        m = motd_pat.match(line.rstrip("\n\r"))
+        if m:
+            old_line = line.rstrip("\n\r")
+            lines[i] = f"{m.group(1)}{new_motd_value}{m.group(2)}\n"
+            new_line = lines[i].rstrip("\n\r")
+            if old_line != new_line:
+                log(f"  motd: {old_line}")
+                log(f"     → {new_line}")
+                updated = True
+            else:
+                log("  motd 无变化")
+                return
+            break
+
+    if not updated:
+        log("未找到匹配的 motd 行（预期格式: motd=GT\\:New Horizons <type> <number>）", "WARN")
+        return
+
+    if not dry_run:
+        with open(props_path, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+        log("  server.properties 已更新")
+
+
 def open_inner_zip(outer_path):
     """打开外层 zip，返回内层 zip 的 ZipFile 对象。"""
     outer = zipfile.ZipFile(outer_path, "r")
@@ -503,6 +558,13 @@ def main():
 
     log(f"使用: {os.path.basename(zip_path)}")
 
+    # ── 解析构建信息 ──
+    build_type, build_number = parse_build_info(zip_path)
+    if build_type and build_number:
+        log(f"构建类型: {build_type}, 构建号: {build_number}")
+    else:
+        log("无法从文件名解析构建信息，将跳过 motd 更新", "WARN")
+
     # ── 打开 zip ──
     log("正在读取压缩包...")
     inner = open_inner_zip(zip_path)
@@ -575,6 +637,11 @@ def main():
         for name in sorted(excluded, key=str.lower):
             print(f"    - {name}")
 
+    if build_type and build_number:
+        print(f"\n  {'─' * 50}")
+        print(f"  motd 将更新为: GT\\:New Horizons {build_type} {build_number}")
+        print(f"  {'─' * 50}")
+
     # ── 确认 ──
     print()
     if dry_run:
@@ -628,6 +695,12 @@ def main():
     print()
     log("━━━ 更新 config ━━━")
     update_configs(inner, dry_run=False)
+
+    # ── 更新 motd ──
+    if build_type and build_number:
+        print()
+        log("━━━ 更新 server.properties motd ━━━")
+        update_server_motd(build_type, build_number, dry_run=False)
 
     # ── 完成 ──
     print()
