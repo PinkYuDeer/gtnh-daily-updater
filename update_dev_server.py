@@ -39,18 +39,19 @@ def log(msg, level="INFO"):
     print(f"[{ts}] [{level}] {msg}")
 
 
-def load_exclude_add_list():
+def load_exclude_mod_list():
     """
-    从 update_daily.cfg 加载新增排除列表。
-    配置文件格式: [exclude_add] 段下每行一个 mod 名称（normalize 后匹配）。
+    从 update_daily.cfg 加载 mod 排除列表。
+    配置文件格式: [exclude] 段下每行一个 mod 名称（normalize 后匹配）。
+    为兼容旧配置，也会读取 [exclude_add] 段。
     若文件不存在则自动创建默认配置。
     """
     default_content = """\
 # update_daily.cfg — 更新工具配置文件
 # 此文件控制更新脚本的行为。
 
-[exclude_add]
-# 以下 mod 在新增时将被排除（不会自动添加），但更新时不受影响。
+[exclude]
+# 以下 mod 将被排除（不会自动新增或更新），本地已有文件会保留不动。
 # 每行一个 mod 的标准化名称（不含版本号，大小写不敏感）。
 # 示例:
 # SomeMod
@@ -67,11 +68,24 @@ def load_exclude_add_list():
         for line in f:
             line = line.strip()
             if line.startswith("[") and line.endswith("]"):
-                in_section = (line.lower() == "[exclude_add]")
+                in_section = line.lower() in ("[exclude]", "[exclude_add]")
                 continue
             if in_section and line and not line.startswith("#"):
                 exclude.add(line.lower())
     return exclude
+
+
+def is_excluded_mod(action, cur_file, new_file, exclude_mods):
+    """判断一次 add/update 是否应该被配置排除。"""
+    if action not in ("add", "update"):
+        return False
+
+    candidates = []
+    if cur_file:
+        candidates.append(normalize_mod_name(cur_file))
+    if new_file:
+        candidates.append(normalize_mod_name(new_file))
+    return any(name in exclude_mods for name in candidates)
 
 
 def find_latest_daily_zip(search_dirs):
@@ -114,7 +128,7 @@ def parse_build_info(zip_filename):
 def update_server_motd(build_type, build_number, dry_run=False):
     """
     更新 server.properties 中的 motd 行。
-    将 motd=GT\:New Horizons xxx NNN 替换为新的构建类型和构建号。
+    将 motd=GT\\:New Horizons xxx NNN 替换为新的构建类型和构建号。
     """
     props_path = os.path.join(SCRIPT_DIR, "server.properties")
     if not os.path.isfile(props_path):
@@ -153,18 +167,89 @@ def update_server_motd(build_type, build_number, dry_run=False):
         log("  server.properties 已更新")
 
 
+def zip_has_direct_content(zf):
+    """判断 zip 是否已经直接包含服务端内容，而不是只包含内层 zip。"""
+    markers = ("mods/", "config/")
+    for name in zf.namelist():
+        normalized = name.replace("\\", "/")
+        if any(
+            normalized.startswith(marker) or f"/{marker}" in normalized
+            for marker in markers
+        ):
+            return True
+    return False
+
+
 def open_inner_zip(outer_path):
-    """打开外层 zip，返回内层 zip 的 ZipFile 对象。"""
+    """
+    打开构建 zip，返回可直接读取内容的 ZipFile 对象。
+    兼容旧格式（外层 artifact 内含 GTNH zip）和新格式（单层 zip）。
+    """
     outer = zipfile.ZipFile(outer_path, "r")
+    if zip_has_direct_content(outer):
+        log("检测到压缩包已直接包含内容，按单层 zip 处理")
+        return outer
+
     inner_name = next(
-        (n for n in outer.namelist()
-         if n.upper().startswith("GTNH-") and n.lower().endswith(".zip")),
+        (
+            n for n in outer.namelist()
+            if n.lower().endswith(".zip")
+            and os.path.basename(n).lower().startswith("gtnh")
+        ),
         None,
     )
     if not inner_name:
-        raise FileNotFoundError("在外层 zip 中未找到内层 GTNH zip")
+        outer.close()
+        raise FileNotFoundError("压缩包未直接包含可用内容，且未找到内层 GTNH zip")
+
+    data = outer.read(inner_name)
+    outer.close()
     log(f"内层 zip: {inner_name}")
-    return zipfile.ZipFile(io.BytesIO(outer.read(inner_name)))
+    return zipfile.ZipFile(io.BytesIO(data))
+
+
+def detect_section_prefix(zf, section_path, required_ext=None):
+    """
+    检测 zip 内某个目录段的前缀。
+    例如 mods/xxx.jar -> "", GTNH-Server/mods/xxx.jar -> "GTNH-Server/"。
+    """
+    section = section_path.strip("/")
+    marker = f"/{section}/"
+    names = []
+    for name in zf.namelist():
+        normalized = name.replace("\\", "/")
+        if normalized.endswith("/"):
+            continue
+        if required_ext and not normalized.lower().endswith(required_ext):
+            continue
+        names.append(normalized)
+
+    # 先查找根级目录，避免被 journeymap/config 等嵌套路径抢先匹配。
+    for normalized in names:
+        if normalized.startswith(f"{section}/"):
+            return ""
+
+    for normalized in names:
+        idx = normalized.find(marker)
+        if idx != -1:
+            return normalized[: idx + 1]
+    return None
+
+
+def detect_mod_prefix(zf):
+    """检测 mods 目录前缀。"""
+    prefix = detect_section_prefix(zf, "mods", ".jar")
+    if prefix is not None:
+        return f"{prefix}mods/"
+    return None
+
+
+def detect_config_prefix(zf):
+    """检测 config 目录前缀。"""
+    prefix = detect_section_prefix(zf, "config")
+    if prefix is not None:
+        return f"{prefix}config/"
+    return None
 
 
 # ─────────────────────── Mod 名称/版本解析 ───────────────────────
@@ -234,11 +319,24 @@ def extract_version_parts(filename):
     return (ver_str, tuple(parsed))
 
 
-def is_newer_version(new_file, old_file):
-    """判断 new_file 的版本是否高于 old_file。"""
+def compare_mod_versions(new_file, old_file):
+    """比较两个 mod 文件名中的版本，返回 1 / 0 / -1。"""
     _, new_v = extract_version_parts(new_file)
     _, old_v = extract_version_parts(old_file)
-    return new_v > old_v
+    if new_v > old_v:
+        return 1
+    if new_v < old_v:
+        return -1
+    return 0
+
+
+def version_change_tag(compare_result):
+    """返回版本变化标签。"""
+    if compare_result > 0:
+        return "↑ 升级"
+    if compare_result < 0:
+        return "↓ 降级"
+    return "= 相同"
 
 
 # ─────────────────────── Mod 匹配 ───────────────────────
@@ -462,12 +560,17 @@ def merge_cfg_content(old_text, new_text):
     return "".join(result)
 
 
-def update_configs(inner_zip, dry_run=False):
+def update_configs(inner_zip, cfg_prefix=None, dry_run=False):
     """
     合并新 config 设置到现有 config 文件中。
     只处理 .cfg / .conf / .properties 文件。
     """
-    cfg_prefix = "config/"
+    if cfg_prefix is None:
+        cfg_prefix = detect_config_prefix(inner_zip)
+    if not cfg_prefix:
+        log("zip 中未找到 config 目录", "WARN")
+        return
+
     stats = {"new": 0, "merged": 0, "unchanged": 0, "error": 0}
     merge_details = []
 
@@ -570,7 +673,18 @@ def main():
     inner = open_inner_zip(zip_path)
 
     # ── 获取新 mod 列表 ──
-    mod_prefix = "mods/"
+    mod_prefix = detect_mod_prefix(inner)
+    if not mod_prefix:
+        log("zip 中未找到 mods 目录！", "ERROR")
+        sys.exit(1)
+    log(f"mods 前缀: {mod_prefix}")
+
+    cfg_prefix = detect_config_prefix(inner)
+    if cfg_prefix:
+        log(f"config 前缀: {cfg_prefix}")
+    else:
+        log("zip 中未找到 config 目录，将跳过 config 更新", "WARN")
+
     new_mods = {}
     for n in inner.namelist():
         if n.startswith(mod_prefix) and n.endswith(".jar"):
@@ -584,13 +698,13 @@ def main():
     # ── 匹配 ──
     matches = match_mods(current_mods, list(new_mods.keys()))
 
-    # ── 加载新增排除列表 ──
-    exclude_add = load_exclude_add_list()
+    # ── 加载 mod 排除列表 ──
+    exclude_mods = load_exclude_mod_list()
     excluded = []
     filtered_matches = []
     for a, c, n in matches:
-        if a == "add" and normalize_mod_name(n) in exclude_add:
-            excluded.append(n)
+        if is_excluded_mod(a, c, n, exclude_mods):
+            excluded.append(n or c)
         else:
             filtered_matches.append((a, c, n))
     matches = filtered_matches
@@ -603,7 +717,7 @@ def main():
     print()
     log(f"匹配结果: {len(updates)} 更新, {len(adds)} 新增, "
         f"{len(keeps)} 不变, {len(extras)} 用户自添加"
-        + (f", {len(excluded)} 排除新增" if excluded else ""))
+        + (f", {len(excluded)} 配置排除" if excluded else ""))
 
     # ── 显示更新详情 ──
     if updates:
@@ -611,8 +725,7 @@ def main():
         print("  更新的 mod:")
         print(f"  {'─' * 50}")
         for _, cur, new in sorted(updates, key=lambda x: x[1].lower()):
-            newer = is_newer_version(new, cur)
-            tag = "↑ 升级" if newer else "↓ 降级" if not newer else "= 相同"
+            tag = version_change_tag(compare_mod_versions(new, cur))
             print(f"    {cur}")
             print(f"      → {new}  ({tag})")
 
@@ -632,7 +745,7 @@ def main():
 
     if excluded:
         print(f"\n  {'─' * 50}")
-        print("  排除新增的 mod（配置排除）:")
+        print("  配置排除的 mod（保留本地文件）:")
         print(f"  {'─' * 50}")
         for name in sorted(excluded, key=str.lower):
             print(f"    - {name}")
@@ -694,7 +807,8 @@ def main():
     # ── 更新 config ──
     print()
     log("━━━ 更新 config ━━━")
-    update_configs(inner, dry_run=False)
+    if cfg_prefix:
+        update_configs(inner, cfg_prefix, dry_run=False)
 
     # ── 更新 motd ──
     if build_type and build_number:
